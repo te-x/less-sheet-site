@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>less-sheet — open huge spreadsheets instantly</title>
+<meta name="description" content="A native, read-only viewer for spreadsheet-sized data. It reads CSV — plain, gzipped, or streamed from a URL — and nothing else, which is why it opens 10 GB as fast as 10 MB.">
+<link rel="icon" href="assets/logo.svg">
+<style>
+  /* -------------------------------------------------------------------------
+     Set like the thing it views: hairline rules for rows, one vertical rule
+     between the prose column and the figure column, row numbers in the gutter,
+     a ledger for the proof, figures with plain borders. Serif for reading,
+     the system sans for small functional text (Filipe: no monospace).
+     No gradients, no cards, no glow, nothing rounded.
+
+     Zero build step, zero third-party requests, zero webfonts, and no
+     JavaScript for any content, the theme, or the platform toggle
+     (ARCH-frontpage 7.1 / 7.3 / 7.4).
+     ------------------------------------------------------------------------- */
+  :root {
+    color-scheme: light dark;
+    --paper: #faf9f6;
+    --ink: #1c1b18;
+    --dim: #6b6960;
+    --line: #dedcd3;
+    --tint: #f1efe8;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Cantarell, "Helvetica Neue", Arial, sans-serif;
+    --serif: Charter, "Bitstream Charter", "Source Serif 4", Georgia, "Liberation Serif", serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #131311; --ink: #e8e6df; --dim: #98958a; --line: #2c2b26;
+      --tint: #1d1c19;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 17px/1.55 var(--serif);
+    overflow-x: hidden;                 /* the body never scrolls horizontally */
+  }
+  .col { max-width: 1280px; margin: 0 auto; padding: 0 24px; }
+  a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:hover { color: var(--dim); }
+  code { font-family: inherit; font-style: italic; }
+
+  /* ---- masthead: the header row ---- */
+  header.site { border-bottom: 1px solid var(--line); }
+  header.site .col { display: flex; align-items: center; gap: 10px; height: 58px; }
+  header.site img { width: 21px; height: 21px; }
+  header.site .name { font: 700 17px var(--serif); letter-spacing: -.01em; }
+  header.site nav { margin-left: auto; display: flex; gap: 22px; }
+  header.site nav a { font: 13px var(--sans); color: var(--dim); text-decoration: none; }
+  header.site nav a:hover { color: var(--ink); text-decoration: underline; }
+
+  /* ---- bands: each one a row of the table ---- */
+  .band { border-bottom: 1px solid var(--line); }
+  .band > .col {
+    display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 8fr);
+    padding-top: 64px; padding-bottom: 64px;
+  }
+  .band .prose { min-width: 0; padding-right: 44px; }
+  .band .figs  { min-width: 0; padding-left: 44px; border-left: 1px solid var(--line); }
+  /* The text sits against the MIDDLE of its screenshot, not its top edge. Only
+     the prose is centred, deliberately: centring the grid as a whole would let
+     the figure shrink to its content too, and the divider rule beside it would
+     stop short of the band instead of running its full height. The figure keeps
+     stretching; only the words move. */
+  .band .prose { align-self: center; }
+  /* A short paragraph next to a tall screenshot would otherwise centre into a
+     lot of empty space at the top and bottom of a very tall band. This is the
+     one place that reads worse centred than aligned, so bands whose prose is
+     much shorter than their figure opt back out. */
+  .band .prose.top { align-self: start; }
+  @media (max-width: 980px) {
+    .band > .col { grid-template-columns: 1fr; }
+    .band .prose { padding-right: 0; align-self: start; }
+    .band .figs  { padding-left: 0; border-left: 0; margin-top: 30px; }
+  }
+
+  /* Row number in the gutter — the app numbers its rows; so does its page. */
+  .rn { font: 11px var(--sans); color: var(--dim); letter-spacing: .08em; margin-bottom: 16px; }
+
+  h1 {
+    font: 700 clamp(33px, 4.6vw, 44px)/1.12 var(--serif);
+    letter-spacing: -.012em; margin: 0 0 16px;
+  }
+  .band h2 { font: 700 26px/1.25 var(--serif); letter-spacing: -.01em; margin: 0 0 14px; }
+  .band p { margin: 0 0 14px; }
+  .band p, .lede { color: var(--ink); }
+  .quiet { color: var(--dim); }
+  .lede { font-size: 19px; line-height: 1.5; margin: 0 0 10px; }
+  .lede b { font-weight: 600; }
+
+  /* ---- the proof, set as a ledger ---- */
+  .ledger { margin: 30px 0 26px; border-top: 1px solid var(--ink); width: min(100%, 30em); }
+  .ledger .row {
+    display: flex; align-items: baseline; justify-content: space-between;
+    border-bottom: 1px solid var(--line); padding: 10px 2px;
+  }
+  .ledger .size { font: 15px var(--sans); color: var(--dim); }
+  .ledger .time { font: 700 30px/1 var(--serif); letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+  .ledger .note { font: 12.5px/1.6 var(--sans); color: var(--dim); padding: 10px 2px 0; }
+
+  .draft {
+    display: inline-block; font: 600 10.5px/1 var(--sans); letter-spacing: .07em;
+    color: #7a4b00; background: #f6e8c8; border: 1px solid #dcc386; padding: 4px 6px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .draft { color: #e8b05e; background: #2b2113; border-color: #574220; }
+  }
+
+  /* ---- figures: plain borders, quiet captions, nothing floating ---- */
+  figure { margin: 0; }
+  .shot { display: block; width: 100%; height: auto; }
+  figcaption { font: 12.5px/1.5 var(--sans); color: var(--dim); padding-top: 9px; }
+  .rail { display: flex; gap: 22px; overflow-x: auto; scroll-snap-type: x mandatory; padding-bottom: 4px; }
+  .rail figure { flex: 0 0 min(700px, 88%); scroll-snap-align: start; }
+  .pending {
+    aspect-ratio: 3 / 2; display: grid; place-content: center; text-align: center;
+    border: 1px dashed var(--line); color: var(--dim);
+    font: 12.5px/1.7 var(--sans); padding: 20px;
+  }
+
+  /* ---- platform toggle: two radios, no JavaScript ---- */
+  .plat-in { position: absolute; opacity: 0; pointer-events: none; }
+  .seg { display: flex; gap: 18px; margin-bottom: 14px; font: 13px var(--sans); }
+  .seg label { color: var(--dim); cursor: pointer; padding-bottom: 3px; }
+  #plat-mac:checked   ~ div .seg label[for="plat-mac"],
+  #plat-linux:checked ~ div .seg label[for="plat-linux"] {
+    color: var(--ink); border-bottom: 1px solid var(--ink);
+  }
+  #plat-mac:focus-visible   ~ div .seg label[for="plat-mac"],
+  #plat-linux:focus-visible ~ div .seg label[for="plat-linux"] {
+    outline: 2px solid var(--ink); outline-offset: 3px;
+  }
+  .only-linux { display: none; }
+  #plat-linux:checked ~ div .only-linux { display: block; }
+  #plat-linux:checked ~ div .only-mac   { display: none; }
+  /* The reveal rule above is MORE SPECIFIC than `.rail` (an id + a class beats
+     one class), so it blockifies whatever it shows. That is right for a plain
+     div, and wrong for the screenshot rail: `.rail` is a horizontal flex
+     carousel with scroll-snap, and blockified it collapses into a vertical
+     stack of full-width shots. The macOS rail never hit this because it is only
+     ever HIDDEN by the toggle, never re-shown — so the bug was visible on
+     exactly one of the two tabs. Restore the carousel explicitly. */
+  #plat-linux:checked ~ div .rail.only-linux { display: flex; }
+
+  /* ---- buttons: a rectangle with a border, like a key on a keyboard ---- */
+  .btn {
+    display: inline-block; font: 600 13px var(--sans); letter-spacing: .02em;
+    color: var(--ink); background: none; border: 1px solid var(--ink);
+    padding: 11px 20px; text-decoration: none;
+  }
+  .btn:hover { background: var(--ink); color: var(--paper); }
+  /* A "coming soon" chip, not a button pretending to be one: no link, no hover
+     lift, dimmed border. Nothing here is clickable yet, and a control that looks
+     pressable but does nothing is worse than one that plainly says wait. */
+  .btn.soon {
+    color: var(--dim); border-color: var(--line); cursor: default;
+    text-transform: lowercase;
+  }
+  .btn.soon:hover { background: none; color: var(--dim); }
+  .reqs { font: 12.5px/1.7 var(--sans); color: var(--dim); margin: 12px 0 0; }
+  .reqs b { color: var(--ink); font-weight: 600; }
+
+  /* The Gatekeeper note: a footnote with a rule, not an alert card. */
+  .fn {
+    margin-top: 16px; padding-left: 14px; border-left: 2px solid var(--line);
+    font-size: 14.5px; line-height: 1.55; color: var(--dim);
+  }
+  .fn b { color: var(--ink); font-weight: 600; }
+  .fn .path { color: var(--ink); font-weight: 600; }
+
+  /* ---- the comparison, set as the table it is ---- */
+  .cmp-wrap { overflow-x: auto; }
+  .cmp { width: 100%; border-collapse: collapse; }
+  .cmp th, .cmp td { text-align: left; padding: 12px 14px 12px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .cmp thead th { font: 600 11px var(--sans); letter-spacing: .09em; text-transform: uppercase; color: var(--dim); }
+  .cmp td { font-size: 15.5px; }
+  .cmp td:first-child { font: 12.5px var(--sans); color: var(--dim); width: 9em; padding-top: 15px; }
+  /* The benchmark table carries three variants x (time, memory) = seven
+     columns. It needs to be tighter than a two-column comparison or it wraps
+     inside the cells; .cmp-wrap already scrolls it horizontally on narrow
+     screens rather than letting the page scroll. */
+  .cmp.grid7 th, .cmp.grid7 td { padding: 9px 10px 9px 0; font-size: 14px; white-space: nowrap; }
+  .cmp.grid7 td:first-child { width: 5.5em; padding-top: 11px; }
+  .cmp.grid7 thead tr:first-child th { border-bottom: 0; padding-bottom: 2px; }
+  .cmp.grid7 thead tr:first-child th[colspan] { color: var(--ink); }
+
+  /* ---- download ---- */
+  /* A command to copy. NOT monospace — the page has no mono face anywhere, and
+     one introduced here for three short lines would read as a different
+     document. `pre` still does the load-bearing part (it keeps the line breaks
+     and the exact spacing); the tint and the rule are what say "copy this".
+     Wraps rather than scrolls, because a horizontally clipped shell command is
+     a command you cannot copy correctly on a phone. */
+  .dl-way { font: 600 12px var(--sans); letter-spacing: .06em; text-transform: uppercase;
+            color: var(--dim); margin: 22px 0 7px; }
+  .cmd {
+    margin: 0; padding: 11px 13px; background: var(--tint); border-left: 2px solid var(--line);
+    font: 13.5px/1.65 var(--sans); color: var(--ink);
+    white-space: pre-wrap; overflow-wrap: anywhere; -webkit-user-select: all; user-select: all;
+  }
+  .cmd code { font-style: normal; }
+  .dl { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+  .dl > div { padding: 0 28px; }
+  .dl > div:first-child { padding-left: 0; }
+  .dl > div + div { border-left: 1px solid var(--line); }
+  .dl h3 { font: 600 13px var(--sans); letter-spacing: .06em; text-transform: uppercase; margin: 0 0 14px; color: var(--dim); }
+  @media (max-width: 700px) {
+    .dl { grid-template-columns: 1fr; }
+    .dl > div { padding: 0 0 26px; }
+    .dl > div + div { border-left: 0; border-top: 1px solid var(--line); padding-top: 26px; }
+  }
+  .reads { font: 12.5px var(--sans); color: var(--dim); margin-top: 26px; }
+  .reads b { color: var(--ink); }
+
+  footer { padding: 30px 0 60px; }
+  footer .col { display: flex; gap: 14px; flex-wrap: wrap; justify-content: space-between; }
+  footer span { font: 13px/1.6 var(--sans); color: var(--dim); }
+</style>
+</head>
+<body>
+
+<!-- The platform radios sit before the page wrapper so the sibling selectors
+     above can reach everything. Hidden but keyboard-focusable. -->
+<input class="plat-in" type="radio" name="plat" id="plat-mac" checked>
+<input class="plat-in" type="radio" name="plat" id="plat-linux">
+
+<div>
+<header class="site">
+  <div class="col">
+    <img src="assets/logo.svg" alt=""><span class="name">less-sheet</span>
+    <nav>
+      <a href="#speed">speed</a>
+      <a href="#bench">benchmarks</a>
+      <a href="#compare">vs. excel</a>
+      <a href="#download">download</a>
+    </nav>
+  </div>
+</header>
+
+<!-- 01 ──────────────────────────────────────────────────────────────────── -->
+<section class="band" id="speed">
+  <div class="col">
+    <div class="prose">
+      <div class="rn">01</div>
+      <h1>Open any CSV instantly.</h1>
+      <p class="lede">less-sheet is a native, read-only viewer for
+        spreadsheet-sized data, focused on <b>speed and low memory use whatever
+        the file size</b>. Today it reads CSV — plain or gzipped, local or
+        streamed from a URL — with more formats coming.</p>
+      <p class="lede">It never loads the whole file into memory, only the
+        minimum needed to fill the window.</p>
+
+      <div class="ledger">
+        <div class="only-mac">
+          <div class="row"><span class="size">10 MB</span><span class="time">168 ms</span></div>
+          <div class="row"><span class="size">10 GB</span><span class="time">214 ms</span></div>
+        </div>
+        <div class="only-linux">
+          <div class="row"><span class="size">10 MB</span><span class="time">166 ms</span></div>
+          <div class="row"><span class="size">10 GB</span><span class="time">168 ms</span></div>
+        </div>
+        <div class="note">cold launch to data on screen</div>
+      </div>
+    </div>
+
+    <div class="figs">
+      <div class="seg">
+        <label for="plat-mac">macos</label><label for="plat-linux">linux</label>
+      </div>
+      <figure class="only-mac">
+        <picture>
+          <source media="(prefers-color-scheme: dark)"
+                  srcset="assets/shots/shot-hero-macos-dark.webp">
+          <img class="shot" src="assets/shots/shot-hero-macos-light.webp"
+               width="1500" height="989" alt="less-sheet showing a large CSV">
+        </picture>
+      </figure>
+      <figure class="only-linux">
+        <picture>
+          <source media="(prefers-color-scheme: dark)"
+                  srcset="assets/shots/shot-hero-linux-dark.webp">
+          <img class="shot" src="assets/shots/shot-hero-linux-light.webp"
+               width="1500" height="989" alt="less-sheet on GNOME showing a large CSV">
+        </picture>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- 02 ──────────────────────────────────────────────────────────────────── -->
+<section class="band" id="bench">
+  <div class="col">
+    <div class="prose">
+      <div class="rn">02</div>
+      <h2>Benchmarks.</h2>
+      <p>Time and memory to get your first look at the data. Both barely move as
+        the file grows.<sup>*</sup></p>
+      <p class="quiet" style="font-size:14.5px">* Very wide CSVs — thousands of
+        columns — do add to the load time.</p>
+      <p>Memory is quoted as <b>engine + window</b>. Only the first number is
+        about your file, and it is the small one: ten gigabytes, a hundred and
+        thirty-five million rows, rests in under three megabytes. The second is
+        the window itself, and it does not move whatever you open.</p>
+    </div>
+    <div class="figs cmp-wrap">
+      <div class="only-mac">
+        <table class="cmp grid7">
+          <thead>
+            <tr><th></th><th colspan="2">CSV · 10 cols</th><th colspan="2">CSV · 2000 cols</th><th colspan="2">CSV.gz</th></tr>
+            <tr><th>size</th><th>open</th><th>memory</th><th>open</th><th>memory</th><th>open</th><th>memory</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>10 KB</td><td>167 ms</td><td>1.2 + 59</td><td>—</td><td>—</td><td>166 ms</td><td>8.4 + 59</td></tr>
+            <tr><td>10 MB</td><td>168 ms</td><td>1.2 + 59</td><td>219 ms</td><td>7.9 + 59</td><td>215 ms</td><td>8.4 + 59</td></tr>
+            <tr><td>10 GB</td><td>214 ms</td><td>2.5 + 59</td><td>201 ms</td><td>7.9 + 59</td><td>213 ms</td><td>10.6 + 59</td></tr>
+          </tbody>
+        </table>
+        <p class="reqs" style="margin-top:14px">MacBook Pro, Apple M2 Pro, Samsung
+          NVMe · memory in MiB</p>
+      </div>
+      <div class="only-linux">
+        <table class="cmp grid7">
+          <thead>
+            <tr><th></th><th colspan="2">CSV · 10 cols</th><th colspan="2">CSV · 2000 cols</th><th colspan="2">CSV.gz</th></tr>
+            <tr><th>size</th><th>open</th><th>memory</th><th>open</th><th>memory</th><th>open</th><th>memory</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>10 KB</td><td>151 ms</td><td>0.8 + 68</td><td>—</td><td>—</td><td>158 ms</td><td>7.9 + 68</td></tr>
+            <tr><td>10 MB</td><td>166 ms</td><td>0.8 + 68</td><td>179 ms</td><td>6.9 + 67</td><td>258 ms</td><td>7.9 + 68</td></tr>
+            <tr><td>10 GB</td><td>168 ms</td><td>2.3 + 68</td><td>182 ms</td><td>6.9 + 67</td><td>259 ms</td><td>9.5 + 68</td></tr>
+          </tbody>
+        </table>
+        <p class="reqs" style="margin-top:14px">Arch Linux, Ryzen 3600, Samsung
+          960 EVO · memory in MiB</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- 03 ──────────────────────────────────────────────────────────────────── -->
+<section class="band">
+  <div class="col">
+    <div class="prose">
+      <div class="rn">03</div>
+      <h2>Quick toggles for the most common parameters.</h2>
+      <p>Separator, quote character, header row and text encoding are detected
+        from the file itself. You open the file and read it — there is no
+        import step.</p>
+      <p>When a guess is wrong, each of those is a live control: change it and
+        the open document re-renders in place. No closing, no re-importing, no
+        starting over.</p>
+    </div>
+    <div class="figs">
+      <figure class="only-mac">
+        <picture>
+          <source media="(prefers-color-scheme: dark)"
+                  srcset="assets/shots/shot-dialect-macos-dark.webp">
+          <img class="shot" src="assets/shots/shot-dialect-macos-light.webp"
+               width="1500" height="989" alt="Separator and quote controls over the grid"
+               loading="lazy" decoding="async">
+        </picture>
+        <figcaption>separator guessed from the file — one click to override</figcaption>
+      </figure>
+      <figure class="only-linux">
+        <picture>
+          <source media="(prefers-color-scheme: dark)"
+                  srcset="assets/shots/shot-dialect-linux-dark.webp">
+          <img class="shot" src="assets/shots/shot-dialect-linux-light.webp"
+               width="1500" height="989" alt="separator guessed from the file — one click to override" loading="lazy" decoding="async">
+        </picture>
+        <figcaption>separator guessed from the file — one click to override</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- 04 ──────────────────────────────────────────────────────────────────── -->
+<section class="band">
+  <div class="col">
+    <div class="prose">
+      <div class="rn">04</div>
+      <h2>Search &amp; filter.</h2>
+      <p>Quickly find content across the entire file, or filter down to just
+        the rows you need.</p>
+      <p>Copying returns the original bytes, regardless of any formatting you
+        applied in the viewer.</p>
+    </div>
+    <div class="figs">
+      <div class="rail only-mac">
+        <figure>
+          <picture>
+            <source media="(prefers-color-scheme: dark)"
+                    srcset="assets/shots/shot-search-macos-dark.webp">
+            <img class="shot" src="assets/shots/shot-search-macos-light.webp"
+                 width="1500" height="989" alt="Text search with live match count"
+                 loading="lazy" decoding="async">
+          </picture>
+          <figcaption>live match count, every visible match highlighted</figcaption>
+        </figure>
+        <figure>
+          <picture>
+            <source media="(prefers-color-scheme: dark)"
+                    srcset="assets/shots/shot-filter-macos-dark.webp">
+            <img class="shot" src="assets/shots/shot-filter-macos-light.webp"
+                 width="1500" height="989" alt="Typed column predicate"
+                 loading="lazy" decoding="async">
+          </picture>
+          <figcaption>typed column predicates</figcaption>
+        </figure>
+      </div>
+      <div class="rail only-linux">
+        <figure class="only-linux">
+        <picture>
+          <source media="(prefers-color-scheme: dark)"
+                  srcset="assets/shots/shot-search-linux-dark.webp">
+          <img class="shot" src="assets/shots/shot-search-linux-light.webp"
+               width="1500" height="989" alt="live match count, every visible match highlighted" loading="lazy" decoding="async">
+        </picture>
+        <figcaption>live match count, every visible match highlighted</figcaption>
+      </figure>
+        <figure class="only-linux">
+        <picture>
+          <source media="(prefers-color-scheme: dark)"
+                  srcset="assets/shots/shot-filter-linux-dark.webp">
+          <img class="shot" src="assets/shots/shot-filter-linux-light.webp"
+               width="1500" height="989" alt="typed column predicates" loading="lazy" decoding="async">
+        </picture>
+        <figcaption>typed column predicates</figcaption>
+      </figure>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 05 ──────────────────────────────────────────────────────────────────── -->
+<section class="band" id="compare">
+  <div class="col">
+    <div class="prose">
+      <div class="rn">05</div>
+      <h2>Where a spreadsheet struggles.</h2>
+      <p>Spreadsheets like Excel and LibreOffice are powerful tools, built to
+        edit and compute. But they load the whole file into memory, interpret
+        its contents, cap how many rows it can have, and make changing the
+        parsing options slow.</p>
+      <p>less-sheet loads the bare minimum and guesses the parsing options
+        from the data. You can change them easily when it guesses wrong.</p>
+    </div>
+    <div class="figs cmp-wrap">
+      <table class="cmp">
+        <thead><tr><th></th><th>Excel · LibreOffice</th><th>less-sheet</th></tr></thead>
+        <tbody>
+          <tr><td>opening</td>
+              <td>Imports the whole file before showing anything</td>
+              <td>Shows the viewport; reads nothing else</td></tr>
+          <tr><td>row limit</td>
+              <td>1,048,576</td>
+              <td>None</td></tr>
+          <tr><td>your values</td>
+              <td>Rewritten on import unless you catch it — leading zeros
+                  dropped, <code>1-5</code> becomes a date, long IDs go
+                  scientific</td>
+              <td>Never modified; copy returns the original</td></tr>
+          <tr><td>separator, quote</td>
+              <td>A one-shot import dialog, before you see the data</td>
+              <td>Live controls, after</td></tr>
+          <tr><td>memory</td>
+              <td>Scales with the file</td>
+              <td>Flat</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- 06 ──────────────────────────────────────────────────────────────────── -->
+<section class="band" id="download">
+  <div class="col">
+    <div class="prose top">
+      <div class="rn">06</div>
+      <h2>Free. Tiny. No account. No telemetry.</h2>
+      <p>macOS and Linux versions available.</p>
+    </div>
+
+    <div class="figs">
+      <div class="dl">
+        <div>
+          <h3>macOS</h3>
+          <p style="margin:0"><span class="btn soon">coming soon</span></p>
+          <p class="reqs">macOS 26.0+ · Apple silicon · ~3&nbsp;MB<br>
+            via Homebrew, a one-line install, or a&nbsp;.dmg<br>
+            reads csv · csv.gz · http(s)</p>
+        </div>
+        <div>
+          <h3>Linux</h3>
+          <p style="margin:0"><span class="btn soon">coming soon</span></p>
+          <p class="reqs">x86_64 and aarch64 · ~0.8&nbsp;MB<br>
+            glibc 2.34+ · GTK 4.20 · libadwaita 1.8<br>
+            Fedora 43+ and current Arch.<br>
+            <b>Debian 13 ships GTK 4.18 and will not run this build.</b><br>
+            reads csv · csv.gz · http(s)</p>
+          <div class="fn">A Flatpak — which carries its own GNOME runtime and
+            runs regardless of your distribution’s version — is planned.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="col">
+    <span>less-sheet does for tabular data what <code>less</code> does for text.</span>
+    <span>macOS 26+ · Linux</span>
+  </div>
+</footer>
+</div>
+
+</body>
+</html>
